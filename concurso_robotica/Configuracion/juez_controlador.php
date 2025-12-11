@@ -26,12 +26,75 @@ try {
         throw new Exception("No tienes permisos de Juez.");
     }
 
-    // 2. OBTENER DATOS
     $method = $_SERVER['REQUEST_METHOD'];
-    $input = json_decode(file_get_contents('php://input'), true);
-    $action = $input['action'] ?? '';
 
+    // --- PETICIONES GET (Lectura) ---
+    if ($method === 'GET') {
+        $action = $_GET['action'] ?? '';
+
+        if ($action === 'listar_proyectos') {
+            $categoria = $_GET['categoria'] ?? 'TODOS';
+            
+            // Si la categoría es TODOS, podríamos iterar o ajustar el SP. 
+            // Por simplicidad, asumiremos que el frontend manda una categoría específica 
+            // o ajustamos la lógica para traer todo si el SP lo permite.
+            // Nota: Tu SP `Sp_Juez_ListarProyectos` requiere nombre_categoria.
+            
+            // Para obtener todo, primero obtenemos las categorías asignadas al juez
+            if ($categoria === 'TODOS') {
+                // Obtener todas las asignaciones de este juez
+                $stmt = $pdo->prepare("CALL Sp_Juez_ObtenerCategoriasAsignadas(:idj)");
+                $stmt->bindParam(':idj', $idJuez);
+                $stmt->execute();
+                $cats = $stmt->fetchAll(PDO::FETCH_COLUMN);
+                $stmt->closeCursor();
+
+                $todosLosProyectos = [];
+                
+                // Iterar por cada categoría asignada para buscar proyectos
+                foreach($cats as $catNombre) {
+                    $stmt = $pdo->prepare("CALL Sp_Juez_ListarProyectos(:idj, :nomCat)");
+                    $stmt->bindParam(':idj', $idJuez);
+                    $stmt->bindParam(':nomCat', $catNombre);
+                    $stmt->execute();
+                    $proyectos = $stmt->fetchAll(PDO::FETCH_ASSOC);
+                    $stmt->closeCursor();
+                    
+                    // Añadir nombre de categoría a cada proyecto para mostrarlo en tabla
+                    foreach($proyectos as &$p) { $p['nombre_categoria'] = $catNombre; }
+                    
+                    $todosLosProyectos = array_merge($todosLosProyectos, $proyectos);
+                }
+                
+                $response = ["success" => true, "data" => $todosLosProyectos];
+
+            } else {
+                // Filtrado específico
+                $stmt = $pdo->prepare("CALL Sp_Juez_ListarProyectos(:idj, :nomCat)");
+                $stmt->bindParam(':idj', $idJuez);
+                $stmt->bindParam(':nomCat', $categoria);
+                $stmt->execute();
+                $proyectos = $stmt->fetchAll(PDO::FETCH_ASSOC);
+                
+                foreach($proyectos as &$p) { $p['nombre_categoria'] = $categoria; }
+
+                $response = ["success" => true, "data" => $proyectos];
+            }
+        }
+        elseif ($action === 'obtener_categorias') {
+            $stmt = $pdo->prepare("CALL Sp_Juez_ObtenerCategoriasAsignadas(:idj)");
+            $stmt->bindParam(':idj', $idJuez);
+            $stmt->execute();
+            $cats = $stmt->fetchAll(PDO::FETCH_ASSOC); // Devuelve array de rows
+            
+            $response = ["success" => true, "data" => $cats];
+        }
+    }
+
+    // --- PETICIONES POST (Escritura) ---
     if ($method === 'POST') {
+        $input = json_decode(file_get_contents('php://input'), true);
+        $action = $input['action'] ?? '';
         
         // --- GUARDAR EVALUACIÓN ---
         if ($action === 'guardar_evaluacion') {
@@ -41,7 +104,6 @@ try {
             if ($idEquipo <= 0) throw new Exception("ID de equipo no válido.");
 
             // Llamada al Procedimiento Almacenado
-            // RegistrarEvaluacion(id_equipo, id_juez, total, OUT resultado)
             $stmt = $pdo->prepare("CALL RegistrarEvaluacion(:ide, :idj, :tot, @res)");
             $stmt->bindParam(':ide', $idEquipo);
             $stmt->bindParam(':idj', $idJuez);
