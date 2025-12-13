@@ -129,7 +129,7 @@ END //
 DELIMITER ;
 
 -- =============================================
--- 3. PROCEDIMIENTOS ALMACENADOS (MODIFICADOS PARA RETURN SELECT)
+-- 3. PROCEDIMIENTOS ALMACENADOS
 -- =============================================
 
 DELIMITER //
@@ -141,23 +141,29 @@ BEGIN
     FROM usuarios WHERE email = p_email AND (tipo_usuario = p_tipo OR tipo_usuario = 'COACH_JUEZ' OR p_tipo = 'ADMIN');
 END //
 
--- REGISTRO USUARIO (Modificado: Retorna SELECT)
+-- REGISTRO USUARIO (Validación de Nombres Duplicados AÑADIDA)
 CREATE PROCEDURE RegistrarUsuario(
     IN p_email VARCHAR(100), IN p_password_hash VARCHAR(255),
     IN p_nombres VARCHAR(100), IN p_apellidos VARCHAR(100),
     IN p_tipo_usuario ENUM('ADMIN','JUEZ','COACH'), IN p_escuela_proc VARCHAR(150)
 )
 BEGIN
+    -- Validar Email
     IF EXISTS (SELECT 1 FROM usuarios WHERE email = p_email) THEN
-        SELECT 'ERROR: Email ya registrado' AS mensaje, 0 AS id;
+        SELECT 'ERROR: El correo electrónico ya está registrado.' AS mensaje, 0 AS id;
+    
+    -- Validar Nombre Completo Duplicado (Requerimiento)
+    ELSEIF EXISTS (SELECT 1 FROM usuarios WHERE nombres = p_nombres AND apellidos = p_apellidos) THEN
+        SELECT 'ERROR: Ya existe un usuario registrado con ese Nombre y Apellido.' AS mensaje, 0 AS id;
+        
     ELSE
         INSERT INTO usuarios(email, password_hash, nombres, apellidos, escuela_proc, tipo_usuario)
         VALUES(p_email, p_password_hash, p_nombres, p_apellidos, p_escuela_proc, p_tipo_usuario);
-        SELECT 'ÉXITO: Usuario registrado' AS mensaje, LAST_INSERT_ID() AS id;
+        SELECT 'ÉXITO: Usuario registrado correctamente.' AS mensaje, LAST_INSERT_ID() AS id;
     END IF;
 END //
 
--- NUEVO SP: ACTUALIZAR ROL (Para evitar SQL en promover_juez.php)
+-- ACTUALIZAR ROL
 CREATE PROCEDURE ActualizarRolUsuario(IN p_id_usuario INT, IN p_rol VARCHAR(20))
 BEGIN
     UPDATE usuarios SET tipo_usuario = p_rol WHERE id_usuario = p_id_usuario;
@@ -168,7 +174,7 @@ BEGIN
     END IF;
 END //
 
--- REGISTRO EQUIPO (Modificado: Retorna SELECT)
+-- REGISTRO EQUIPO
 CREATE PROCEDURE RegistrarEquipo(
     IN p_nombre VARCHAR(150), IN p_prototipo VARCHAR(200),
     IN p_id_evento INT, IN p_id_categoria INT, IN p_id_coach INT
@@ -186,32 +192,56 @@ BEGIN
     END IF;
 END //
 
--- AGREGAR INTEGRANTE (Modificado: Retorna SELECT)
+-- AGREGAR INTEGRANTE (Validación de Propiedad y Duplicados AÑADIDA)
 CREATE PROCEDURE AgregarIntegrante(
-    IN p_id_equipo INT, IN p_nombre VARCHAR(150), IN p_edad INT, IN p_grado INT
+    IN p_id_equipo INT, 
+    IN p_nombre VARCHAR(150), 
+    IN p_edad INT, 
+    IN p_grado INT,
+    IN p_id_coach_solicitante INT  -- Nuevo parámetro para seguridad
 )
 BEGIN
-    DECLARE v_total INT; DECLARE v_cat INT; DECLARE v_escuela VARCHAR(150);
-    SELECT COUNT(*) INTO v_total FROM integrantes WHERE id_equipo = p_id_equipo;
+    DECLARE v_total INT; 
+    DECLARE v_cat INT; 
+    DECLARE v_escuela VARCHAR(150);
+    DECLARE v_coach_real INT;
     
-    IF v_total >= 3 THEN 
-        SELECT 'ERROR: El equipo ya está lleno (3)' AS mensaje;
+    -- 1. Verificar Propiedad (Seguridad: Coach solo edita sus equipos)
+    SELECT id_coach INTO v_coach_real FROM equipos WHERE id_equipo = p_id_equipo;
+    
+    IF v_coach_real IS NULL THEN
+        SELECT 'ERROR: El equipo no existe.' AS mensaje;
+    ELSEIF v_coach_real <> p_id_coach_solicitante THEN
+        SELECT 'ERROR: No tienes permiso para modificar este equipo (Pertenece a otro Coach).' AS mensaje;
     ELSE
-        SELECT id_categoria, escuela_procedencia INTO v_cat, v_escuela FROM equipos WHERE id_equipo = p_id_equipo;
-        
-        IF NOT VerificarEdadCategoria(p_edad, v_cat) THEN 
-            SELECT 'ERROR: Edad no permitida para la categoría' AS mensaje;
-        ELSEIF NOT VerificarGradoCategoria(p_grado, v_cat) THEN 
-            SELECT 'ERROR: Grado escolar no válido' AS mensaje;
+        -- 2. Verificar Nombres Duplicados en Integrantes
+        IF EXISTS (SELECT 1 FROM integrantes WHERE nombre_completo = p_nombre) THEN
+            SELECT 'ERROR: Esta persona ya está registrada como integrante en el sistema.' AS mensaje;
         ELSE
-            INSERT INTO integrantes(id_equipo, nombre_completo, edad, grado, escuela)
-            VALUES(p_id_equipo, p_nombre, p_edad, p_grado, v_escuela);
-            SELECT 'ÉXITO: Integrante agregado' AS mensaje;
+            -- 3. Verificar Cupo
+            SELECT COUNT(*) INTO v_total FROM integrantes WHERE id_equipo = p_id_equipo;
+            
+            IF v_total >= 3 THEN 
+                SELECT 'ERROR: El equipo ya está lleno (Máximo 3 integrantes).' AS mensaje;
+            ELSE
+                SELECT id_categoria, escuela_procedencia INTO v_cat, v_escuela FROM equipos WHERE id_equipo = p_id_equipo;
+                
+                -- 4. Validar Reglas de Categoría
+                IF NOT VerificarEdadCategoria(p_edad, v_cat) THEN 
+                    SELECT 'ERROR: La edad del integrante no corresponde a la categoría del equipo.' AS mensaje;
+                ELSEIF NOT VerificarGradoCategoria(p_grado, v_cat) THEN 
+                    SELECT 'ERROR: El grado escolar no es válido para esta categoría.' AS mensaje;
+                ELSE
+                    INSERT INTO integrantes(id_equipo, nombre_completo, edad, grado, escuela)
+                    VALUES(p_id_equipo, p_nombre, p_edad, p_grado, v_escuela);
+                    SELECT 'ÉXITO: Integrante agregado correctamente.' AS mensaje;
+                END IF;
+            END IF;
         END IF;
     END IF;
 END //
 
--- ELIMINAR INTEGRANTE (Modificado: Retorna SELECT)
+-- ELIMINAR INTEGRANTE
 CREATE PROCEDURE EliminarIntegrante(IN p_id_integrante INT, IN p_id_coach INT)
 BEGIN
     DECLARE v_id_equipo INT; DECLARE v_owner_coach INT;
@@ -231,7 +261,7 @@ BEGIN
     END IF;
 END //
 
--- CREAR EVENTO (Modificado: Retorna SELECT)
+-- CREAR EVENTO
 CREATE PROCEDURE CrearEvento(IN p_nombre VARCHAR(200), IN p_fecha DATE, IN p_lugar VARCHAR(200))
 BEGIN
     IF p_fecha < CURDATE() THEN
@@ -246,7 +276,7 @@ BEGIN
     END IF;
 END //
 
--- ELIMINAR EVENTO (Modificado: Retorna SELECT)
+-- ELIMINAR EVENTO
 CREATE PROCEDURE EliminarEvento(IN p_id_evento INT)
 BEGIN
     DECLARE EXIT HANDLER FOR SQLEXCEPTION BEGIN ROLLBACK; SELECT 'ERROR: Fallo al eliminar' AS mensaje; END;
@@ -260,7 +290,7 @@ BEGIN
     SELECT 'ÉXITO: Evento eliminado' AS mensaje;
 END //
 
--- ASIGNAR JUEZ (Modificado: Retorna SELECT)
+-- ASIGNAR JUEZ
 CREATE PROCEDURE AsignarJuezEvento(IN p_id_evento INT, IN p_id_juez INT, IN p_id_categoria INT)
 BEGIN
     DECLARE v_escuela_juez VARCHAR(150);
@@ -286,7 +316,7 @@ BEGIN
     DELETE FROM jueces_eventos WHERE id_evento = p_id_evento AND id_juez = p_id_juez AND id_categoria = p_id_categoria;
 END //
 
--- REGISTRAR EVALUACION (Modificado: Retorna SELECT)
+-- REGISTRAR EVALUACION
 CREATE PROCEDURE RegistrarEvaluacion(
     IN p_id_equipo INT, IN p_id_juez INT, IN p_total INT, IN p_detalles JSON
 )
@@ -307,7 +337,7 @@ BEGIN
     END IF;
 END //
 
--- Listados Simples (Sin cambios mayores, solo aseguro no OUTs innecesarios)
+-- CONSULTAS DE LISTADO (Modificado para recibir id_coach en ListarIntegrantesPorEquipo)
 CREATE PROCEDURE ListarDetalleEquiposPorCoach(IN p_id_coach INT)
 BEGIN
     SELECT e.id_equipo, e.nombre_equipo, e.nombre_prototipo, ev.nombre_evento, c.nombre_categoria, e.estado_proyecto,
@@ -319,9 +349,13 @@ BEGIN
     ORDER BY e.id_equipo DESC;
 END //
 
-CREATE PROCEDURE ListarIntegrantesPorEquipo(IN p_id_equipo INT)
+-- MODIFICADO: Ahora valida la propiedad del equipo mediante un JOIN
+CREATE PROCEDURE ListarIntegrantesPorEquipo(IN p_id_equipo INT, IN p_id_coach INT)
 BEGIN
-    SELECT id_integrante, nombre_completo, edad, grado, escuela FROM integrantes WHERE id_equipo = p_id_equipo;
+    SELECT i.id_integrante, i.nombre_completo, i.edad, i.grado, i.escuela 
+    FROM integrantes i
+    INNER JOIN equipos e ON i.id_equipo = e.id_equipo
+    WHERE i.id_equipo = p_id_equipo AND e.id_coach = p_id_coach;
 END //
 
 CREATE PROCEDURE Sp_AdminListarEventos()
